@@ -1,0 +1,179 @@
+name: PR Automation Workflow
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint checks
+        id: eslint
+        run: npm run lint
+      - name: Run Prettier formatting checks
+        id: prettier
+        run: npx prettier --check .
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eslintRes = `${{ steps.eslint.outputs.stdout || steps.eslint.outputs.stderr || 'No ESLint output' }}`;
+            const prettierRes = `${{ steps.prettier.outputs.stdout || steps.prettier.outputs.stderr || 'No Prettier output' }}`;
+            const commentBody = `
+## Code Quality Report
+### ESLint Results
+\`\`\`
+${eslintRes}
+\`\`\`
+### Prettier Results
+\`\`\`
+${prettierRes}
+\`\`\`
+`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run test suite with coverage
+        id: tests
+        run: npm test -- --coverage
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const testRes = `${{ steps.tests.outputs.stdout || steps.tests.outputs.stderr || 'No test output' }}`;
+            const commentBody = `
+## Test Coverage Report
+\`\`\`
+${testRes}
+\`\`\`
+`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-coverage-report
+          path: coverage/
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run dependency vulnerability check
+        id: npm-audit
+        run: npm audit --json | jq -r 'if .advisories then to_entries[] | "\(.key): \(.value.title) (Severity: \(.value.severity))" else "No vulnerabilities found" end' || echo "Audit failed to run"
+      - name: Scan for secrets in code changes
+        id: secret-scan
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          format: text
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const auditRes = `${{ steps.npm-audit.outputs.stdout || 'No audit output' }}`;
+            const secretRes = `${{ steps.secret-scan.outputs.stdout || 'No secrets detected' }}`;
+            const commentBody = `
+## Security Scan Report
+### Dependencies Vulnerabilities
+\`\`\`
+${auditRes}
+\`\`\`
+### Secrets Scan Results
+\`\`\`
+${secretRes}
+\`\`\`
+`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application
+        id: build
+        run: npm run build
+      - name: Validate build output
+        run: |
+          if [ ! -d "dist" ]; then
+            echo "Error: Build output directory 'dist' not found"
+            exit 1
+          fi
+          echo "Build output validated successfully"
+      - name: Upload deployment preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: dist/
+      - name: Post Build Validation Status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildRes = `${{ steps.build.outputs.stdout || steps.build.outputs.stderr || 'No build output' }}`;
+            const commentBody = `
+## Build Validation
+### Build Status: ${{ job.status }}
+\`\`\`
+${buildRes}
+\`\`\`
+Deployment preview artifacts uploaded.
+`;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
